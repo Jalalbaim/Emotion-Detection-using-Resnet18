@@ -12,6 +12,7 @@ from PIL import Image
 from sklearn.metrics import confusion_matrix, f1_score, classification_report
 import seaborn as sns
 
+from AttentionBlock import AttentionBlock
 
 ##from torch.utils.tensorboard import SummaryWriter
 from torch.optim.lr_scheduler import StepLR
@@ -93,7 +94,8 @@ class AffectClassifier:
         weights = ResNet18_Weights.DEFAULT
         self.model = resnet18(weights=weights)
         num_ftrs = self.model.fc.in_features
-        self.model.fc = nn.Linear(num_ftrs, 8)
+        num_classes = 8
+        self.model.fc = AttentionBlock(num_ftrs, 256, num_classes)
         # pass to GPU
         if torch.cuda.is_available():
             self.model = self.model.cuda()
@@ -115,8 +117,8 @@ class AffectClassifier:
         train_losses, val_losses, accuracies = [], [], []
 
         criterion = nn.CrossEntropyLoss()
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
-        scheduler = StepLR(optimizer, step_size=7, gamma=0.1)
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=0.0001)
+        #scheduler = StepLR(optimizer, step_size=7, gamma=0.1)
 
         for epoch in range(num_epochs):
             self.model.train()
@@ -137,10 +139,10 @@ class AffectClassifier:
                 total_train_loss += loss.item() * images.size(0)
                 
                 if (batch_idx + 1) % 5 == 0:
-                    print(f"Epoch [{epoch+1}/{num_epochs}], Batch [{batch_idx+1}/{len(self.train_loader)}], Training Loss: {total_train_loss/5:.4f}")
+                    print(f"Epoch [{epoch+1}/{num_epochs}], Batch [{batch_idx+1}/{len(self.train_loader)}], Training Loss: {total_train_loss/(5*self.batch_size):.4f}")
 
             # Calculate and store average training loss
-            avg_train_loss = total_train_loss / len(self.train_loader)
+            avg_train_loss = total_train_loss / (len(self.train_loader)*self.batch_size)
             train_losses.append(avg_train_loss)
 
             # Validation phase
@@ -160,7 +162,7 @@ class AffectClassifier:
                     total_samples += labels.size(0)
 
             # Calculate and store average validation loss
-            avg_val_loss = total_val_loss / len(self.test_loader)
+            avg_val_loss = total_val_loss / (len(self.test_loader)*self.batch_size)
             val_losses.append(avg_val_loss)
             accuracy = 100 * total_correct / total_samples
             accuracies.append(accuracy)
@@ -168,7 +170,7 @@ class AffectClassifier:
             print(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, Accuracy: {accuracy:.2f}%")
 
             # Learning rate scheduling
-            scheduler.step()
+            #scheduler.step()
 
             # Saving checkpoint
             checkpoint = {
@@ -246,15 +248,11 @@ class AffectClassifier:
 
     def display_predictions(self, num_images=6):
         self.model.eval()  # Set the model to evaluation mode
-
-        # Get a batch of data from the test loader
         dataiter = iter(self.test_loader)
         images, labels = next(dataiter)
 
-        # Select the number of images to display
         images, labels = images[:num_images], labels[:num_images]
 
-        # Move the images to GPU if available
         if torch.cuda.is_available():
             images = images.cuda()
 
@@ -269,42 +267,36 @@ class AffectClassifier:
         # Visualization
         fig, axs = plt.subplots(1, num_images, figsize=(12, 4))
         for i in range(num_images):
-            image = images[i].cpu().numpy().transpose((1, 2, 0))  # Transpose and bring the image to CPU
+            image = images[i].cpu().numpy().transpose((1, 2, 0)) 
             image = np.clip(image, 0, 1)  # Normalize the image to be between 0 and 1
-            label = classes[predicted[i]]  # Get the predicted label
+            label = classes[predicted[i]]  
 
-            axs[i].imshow(image)  # Show the image
-            axs[i].set_title(f'Pred: {label}\nTrue: {classes[labels[i]]}')  # Show the predicted and true label
-            axs[i].axis('off')  # Turn off the axis
+            axs[i].imshow(image) 
+            axs[i].set_title(f'Pred: {label}\nTrue: {classes[labels[i]]}') 
+            axs[i].axis('off') 
 
         plt.show()
     
     def plot_confusion_matrix(self):
-        # Set the model to evaluation mode
         self.model.eval()
         
         all_labels = []
         all_preds = []
-        
-        # No gradient needed
+   
         with torch.no_grad():
             for images, labels in self.test_loader:
                 # Move to GPU if available
                 if torch.cuda.is_available():
                     images = images.cuda()
-                
-                # Get model predictions
+
                 outputs = self.model(images)
                 _, preds = torch.max(outputs, 1)
-                
-                # Move preds and labels to CPU, collect them
+
                 all_preds.extend(preds.cpu().numpy())
                 all_labels.extend(labels.cpu().numpy())
-        
-        # Compute the confusion matrix
+
         cm = confusion_matrix(all_labels, all_preds)
-        
-        # Plot the confusion matrix
+
         fig, ax = plt.subplots(figsize=(8, 8))
         sns.heatmap(cm, annot=True, fmt='d', ax=ax, cmap="Blues")
         ax.set_xlabel('Predicted Labels')
@@ -337,14 +329,13 @@ class AffectClassifier:
         f1_macro = f1_score(all_labels, all_preds, average='macro')
         f1_micro = f1_score(all_labels, all_preds, average='micro')
         f1_weighted = f1_score(all_labels, all_preds, average='weighted')
-        f1_none = f1_score(all_labels, all_preds, average=None)  # F1 score for each class
+        f1_none = f1_score(all_labels, all_preds, average=None) 
 
         print(f"F1 Score (Macro): {f1_macro:.4f}")
         print(f"F1 Score (Micro): {f1_micro:.4f}")
         print(f"F1 Score (Weighted): {f1_weighted:.4f}")
         print("F1 Score for each class:", f1_none)
 
-        # Optionally, return the scores if you need to use them later
         return f1_macro, f1_micro, f1_weighted, f1_none
     
     # Classification report
@@ -372,6 +363,7 @@ class AffectClassifier:
         report = classification_report(all_labels, all_preds, target_names=self.classes)
         print(report)
     
+    """
     def calculate_test_accuracy(self):
         classifier.model.eval()  # Set the model to evaluation mode
 
@@ -396,73 +388,5 @@ class AffectClassifier:
         # Calculate test accuracy
         accuracy = correct / total
         return accuracy
+    """
 
-
-
-# Set the path to the dataset
-path = 'C:/Users/JALAL/OneDrive/Bureau/BENet/transfer_6369964_files_84f3b5df/'
-
-# Check if CUDA (GPU support) is available
-print("CUDA is Available:", torch.cuda.is_available())
-
-# Create an instance of AffectClassifier
-classifier = AffectClassifier(dataset_path=path)
-
-# Load the data
-classifier.load_data()
-
-# Visualize a batch of the data
-classifier.visualize_data()
-
-# Load the model
-classifier.load_model()
-
-# Start training the model
-print('Model training started')
-#train_losses, val_losses, accuracies = classifier.train_model(num_epochs=10)
-
-# Plot the loss curve using the data from checkpoints
-#classifier.plot_loss_curve_from_checkpoints()
-
-checkpoint_dir = './checkpoints2'
-checkpoint_files = sorted([f for f in os.listdir(checkpoint_dir) if f.endswith(".pth")])
-all_train_losses, all_val_losses = [], []
-
-for file in checkpoint_files:
-    checkpoint_path = os.path.join(checkpoint_dir, file)
-    checkpoint = torch.load(checkpoint_path)
-
-    all_train_losses.append(checkpoint['train_loss'])
-    all_val_losses.append(checkpoint['val_loss'])
-    print(f"Loaded checkpoint '{file}' with Train Loss: {checkpoint['train_loss']:.4f}, Val Loss: {checkpoint['val_loss']:.4f}")
-
-plt.figure(figsize=(10, 5))
-plt.plot(all_train_losses, label='Training Loss')
-plt.plot(all_val_losses, label='Validation Loss')
-plt.title('Loss Curve from Checkpoints')
-plt.xlabel('Epochs')
-plt.ylabel('Loss')
-plt.legend()
-plt.show()
-
-# Load the last checkpoint and evaluate the model
-train_losses, val_losses, accuracies = classifier.load_checkpoint_and_evaluate()
-
-# Evaluate the model's performance
-classifier.evaluate_model()
-
-# Display predictions from the model
-classifier.display_predictions()
-
-# Plot the confusion matrix
-classifier.plot_confusion_matrix()
-
-# Calculate F1 scores
-classifier.calculate_f1_scores()
-
-# Generate classification report
-classifier.generate_classification_report()
-
-# Calculate test accuracy
-accuracy = classifier.calculate_test_accuracy()
-print(f"Test Accuracy: {accuracy:.2f}%")
